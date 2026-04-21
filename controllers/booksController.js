@@ -1,28 +1,44 @@
-const { readBooks, writeBooks } = require('../utils/booksFile');
+const { ObjectId } = require('mongodb');
 
 async function getAllBooks(req, res) {
   try {
-    const books = await readBooks();
-    res.status(200).json(books);
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to read books' });
+    const db = req.app.locals.db;
+    const booksCollection = await db.collection('books').find().toArray();
+    res.status(200).json(booksCollection);
+  } catch(err) {
+    res.status(500).json({
+      message: 'Failed to fetch books',
+      error: err.message
+    });
   }
 }
 
 async function getBookById(req, res) {
   try {
-    const id = Number(req.params.id);
-    const books = await readBooks();
+    const id = req.params.id;
 
-    const book = books.find((book) => book.id === id);
+    if(!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid book id' });
+    }
+
+    const db = req.app.locals.db;
+
+    const book = await db.collection('books').findOne({ 
+      _id: new ObjectId(id)
+    });
 
     if (!book) {
       return res.status(404).json({ message: 'Book not found' });
     }
 
     res.status(200).json(book);
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to read book' });
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({ 
+      error: err.message,
+      message: 'Failed to read book' 
+    });
   }
 }
 
@@ -34,75 +50,142 @@ async function createBook(req, res) {
       return res.status(400).json({ message: 'Title is required' });
     }
 
-    const books = await readBooks();
+    const trimmedTitle = title.trim();
+    const normalizedTitle = trimmedTitle.toLowerCase();
 
-    const newId = books.length ? books[books.length - 1].id + 1 : 1;
+    const db = req.app.locals.db;
+
+    const existingBook = await db.collection('books').findOne({
+      normalizedTitle: normalizedTitle
+    });
+
+    if(existingBook) {
+      return res.status(409).json({
+        message: 'The book already exists'
+      })
+    } 
 
     const newBook = {
-      id: newId,
-      title: title.trim(),
-    };
+      title: trimmedTitle,
+      normalizedTitle: normalizedTitle
+    }
 
-    books.push(newBook);
-    await writeBooks(books);
+    const result = await db.collection('books').insertOne(newBook);
 
-    res.status(201).json(newBook);
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to create book' });
+    res.status(201).json({
+      message: 'Book created successfully',
+      book: {
+        _id: result.insertedId,
+        ...newBook
+      }
+    });
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({ 
+      error: err.message,
+      message: 'Failed to create book' 
+    });
   }
 }
 
 async function updateBook(req, res) {
   try {
-    const id = Number(req.params.id);
+    const { id } = req.params;
     const { title } = req.body;
+
+    if(!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid book id' });
+    }
 
     if (!title || title.trim() === '') {
       return res.status(400).json({ message: 'Title is required' });
     }
 
-    const books = await readBooks();
+    const trimmedTitle = title.trim();
+    const normalizedTitle = trimmedTitle.toLowerCase();
 
-    const bookIndex = books.findIndex((book) => book.id === id);
+    const db = req.app.locals.db;
 
-    if (bookIndex === -1) {
-      return res.status(404).json({ message: 'Book not found' });
+    const isDuplicate = await db.collection('books').findOne({ 
+      normalizedTitle: normalizedTitle,
+      _id: { $ne: new ObjectId(id) }
+    })
+
+    if(isDuplicate) {
+      return res.status(409).json({
+        message: 'The book already exists'
+      })
     }
 
-    const updatedBook = {
-      id,
-      title: title.trim(),
-    };
+    const result = await db.collection('books').updateOne(
+      {_id: new ObjectId(id)},
+      {
+        $set: {
+          title: trimmedTitle,
+          normalizedTitle: normalizedTitle
+        }
+      }
+    );
 
-    books[bookIndex] = updatedBook;
-    await writeBooks(books);
+    if(result.matchedCount === 0) {
+      return res.status(404).json({
+        message: 'Book not found'
+      })
+    }
 
-    res.status(200).json(updatedBook);
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to update book' });
+    res.status(200).json({
+      message: 'Book updated successfully',
+      book: {
+        _id: id,
+        title: trimmedTitle,
+        normalizedTitle: normalizedTitle
+      }
+    })
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({ 
+      error: err.message,
+      message: 'Failed to update book' 
+    });
   }
 }
 
 async function deleteBook(req, res) {
   try {
-    const id = Number(req.params.id);
-    const books = await readBooks();
+    const id = req.params.id;
 
-    const bookIndex = books.findIndex((book) => book.id === id);
-
-    if (bookIndex === -1) {
-      return res.status(404).json({ message: 'Book not found' });
+    if(!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid book id' });
     }
 
-    const deletedBook = books.splice(bookIndex, 1)[0];
-    await writeBooks(books);
+    const db = req.app.locals.db;
+
+    const existingBook = await db.collection('books').findOne({
+      _id: new ObjectId(id)
+    });
+
+    if(!existingBook) {
+      return res.status(404).json({
+        message: 'Book not found'
+      })
+    }
+
+    await db.collection('books').deleteOne({
+      _id: new ObjectId(id)
+    });
 
     res.status(200).json({
-      message: 'Book deleted successfully',
-      book: deletedBook,
+      message: 'Book deleted successfully'
     });
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to delete book' });
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({ 
+      error: err.message,
+      message: 'Failed to delete book' 
+    });
   }
 }
 
